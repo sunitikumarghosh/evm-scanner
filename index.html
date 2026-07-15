@@ -66,16 +66,29 @@
 
   /* ---------- Tabs / Admin panel ---------- */
   .tabbar{display:flex;background:#fff;border-bottom:1px solid #ddd;}
-  .tabbar button{flex:1;padding:12px;border:none;background:none;font-size:14px;font-weight:700;color:#888;cursor:pointer;}
+  .tabbar button{flex:1;padding:12px;border:none;background:none;font-size:13px;font-weight:700;color:#888;cursor:pointer;}
   .tabbar button.active{color:var(--saffron);border-bottom:3px solid var(--saffron);}
-  #adminPanel, #scanPanel{display:none;}
-  #adminPanel.active, #scanPanel.active{display:block;}
+  #adminPanel, #scanPanel, #reportPanel{display:none;}
+  #adminPanel.active, #scanPanel.active, #reportPanel.active{display:block;}
+
+  /* ---------- Report table ---------- */
+  .report-table{width:100%;border-collapse:collapse;margin-top:10px;}
+  .report-table th, .report-table td{border:1px solid #e2e2e2;padding:8px 6px;text-align:center;font-size:13px;}
+  .report-table th{background:var(--gray);font-weight:700;}
+  .report-table td.letter-cell{background:#fafafa;font-weight:800;text-align:left;padding-left:10px;}
+  .report-table td.count-cell{cursor:pointer;font-weight:700;color:var(--blue);}
+  .report-table td.count-cell.zero{color:#bbb;cursor:default;font-weight:400;}
+  .report-table td.count-cell:not(.zero):active{background:#dbeafe;}
+  .drill-row{display:flex;justify-content:space-between;padding:6px 4px;font-size:13px;border-bottom:1px solid #eee;}
+  .drill-header{display:flex;justify-content:space-between;padding:6px 4px;font-size:12px;font-weight:700;color:#666;border-bottom:2px solid #ccc;}
+  #drillList{max-height:320px;overflow-y:auto;margin-top:8px;}
 </style>
 </head>
 <body>
 <header><h1>EVM Unit Scanner</h1></header>
 <div class="tabbar">
   <button id="tabScan" class="active">🔍 Scan</button>
+  <button id="tabReport">📊 Report</button>
   <button id="tabAdmin">🔐 Admin</button>
 </div>
 <main>
@@ -115,6 +128,24 @@
     </div>
   </div>
 
+  <!-- ===================== REPORT PANEL ===================== -->
+  <div id="reportPanel">
+    <div class="card">
+      <h2>AC-wise Status Report</h2>
+      <div id="reportLoadMsg" class="small">Loading report…</div>
+      <select id="acSelect" style="display:none;"></select>
+      <div id="reportTableWrap"></div>
+    </div>
+
+    <div class="card" id="drillCard" style="display:none;">
+      <h2 id="drillTitle"></h2>
+      <div class="drill-header">
+        <span>Unit ID</span><span>Box No</span><span>AC No/Name</span><span>PS No</span>
+      </div>
+      <div id="drillList"></div>
+    </div>
+  </div>
+
   <!-- ===================== ADMIN PANEL ===================== -->
   <div id="adminPanel">
     <div class="card" id="loginCard">
@@ -150,7 +181,7 @@
 /* =========================================================
    IMPORTANT: paste your Apps Script Web App /exec URL below
    ========================================================= */
-const API_URL = 'https://script.google.com/macros/s/AKfycbxBA21dLApMdWqt0f6yiECCLgxd_D1xKtGSPHS9RlN1ZcWAMM3DxfntB_zt0fvB8afeLA/exec';
+const API_URL = 'PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE';
 
 let selectedStatuses = [];
 let html5QrCode;
@@ -159,12 +190,16 @@ let adminPassword = null; // kept only in this browser session
 
 /* ---------- TABS ---------- */
 document.getElementById('tabScan').onclick = () => switchTab('scan');
+document.getElementById('tabReport').onclick = () => switchTab('report');
 document.getElementById('tabAdmin').onclick = () => switchTab('admin');
 function switchTab(tab){
   document.getElementById('scanPanel').classList.toggle('active', tab === 'scan');
+  document.getElementById('reportPanel').classList.toggle('active', tab === 'report');
   document.getElementById('adminPanel').classList.toggle('active', tab === 'admin');
   document.getElementById('tabScan').classList.toggle('active', tab === 'scan');
+  document.getElementById('tabReport').classList.toggle('active', tab === 'report');
   document.getElementById('tabAdmin').classList.toggle('active', tab === 'admin');
+  if (tab === 'report' && !reportData) loadReport();
 }
 
 /* ---------- API call helper (avoids CORS preflight by using text/plain) ---------- */
@@ -418,6 +453,75 @@ document.getElementById('markUpdateBtn').onclick = async () => {
     msgDiv.innerHTML = '<div class="msg error">' + err.message + '</div>';
   }
 };
+
+/* ---------- REPORT (AC-wise status-letter x unittype counts) ---------- */
+let reportData = null; // cached after first load — no repeat server calls
+
+async function loadReport(){
+  const loadMsg = document.getElementById('reportLoadMsg');
+  loadMsg.textContent = 'Loading report…';
+  loadMsg.style.display = 'block';
+  document.getElementById('acSelect').style.display = 'none';
+  try{
+    reportData = await callApi('getGroupedReport');
+    populateAcSelect();
+    loadMsg.style.display = 'none';
+    document.getElementById('acSelect').style.display = 'block';
+  }catch(err){
+    loadMsg.textContent = 'Failed to load report: ' + err.message;
+  }
+}
+
+function populateAcSelect(){
+  const sel = document.getElementById('acSelect');
+  sel.innerHTML = '<option value="">— Select AC/PC —</option>' +
+    reportData.acList.map(ac => `<option value="${ac}">${ac}</option>`).join('');
+  sel.onchange = () => renderReportTable(sel.value);
+}
+
+function renderReportTable(ac){
+  const wrap = document.getElementById('reportTableWrap');
+  document.getElementById('drillCard').style.display = 'none';
+  if (!ac){ wrap.innerHTML = ''; return; }
+
+  const { letters, unitTypes, data } = reportData;
+  const acData = data[ac] || {};
+
+  let html = '<table class="report-table"><tr><th>Status</th>' +
+    unitTypes.map(u => `<th>${u}</th>`).join('') + '</tr>';
+
+  letters.forEach(letter => {
+    html += `<tr><td class="letter-cell">${letter}</td>`;
+    unitTypes.forEach(u => {
+      const cell = acData[letter] && acData[letter][u];
+      const count = cell ? cell.count : 0;
+      if (count > 0){
+        html += `<td class="count-cell" onclick="showDrill('${escapeJs(ac)}','${letter}','${escapeJs(u)}')">${count}</td>`;
+      } else {
+        html += `<td class="count-cell zero">-</td>`;
+      }
+    });
+    html += '</tr>';
+  });
+  html += '</table>';
+  wrap.innerHTML = html;
+}
+
+function escapeJs(s){ return String(s).replace(/'/g, "\\'"); }
+
+function showDrill(ac, letter, unitType){
+  const cell = reportData.data[ac] && reportData.data[ac][letter] && reportData.data[ac][letter][unitType];
+  const rows = cell ? cell.rows : [];
+  document.getElementById('drillTitle').textContent = `${ac} — ${letter} — ${unitType} (${rows.length})`;
+  document.getElementById('drillList').innerHTML = rows.map(r => `
+    <div class="drill-row">
+      <span>${r.unit_id}</span><span>${r.box_no}</span><span>${r.ac_no_name}</span><span>${r.ps_no}</span>
+    </div>`).join('');
+  const card = document.getElementById('drillCard');
+  card.style.display = 'block';
+  card.scrollIntoView({behavior:'smooth'});
+}
+
 </script>
 </body>
 </html>
