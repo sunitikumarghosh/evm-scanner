@@ -449,12 +449,13 @@ async function onScanSuccess(decodedText){
 // Shared by camera scan AND manual entry — one place that calls the backend and shows the result
 async function lookupUnitId(cleanId){
   if (!cleanId) return;
-  if (selectedStatuses.length === 0){
+  const statuses = getSelectedStatuses(); // always read fresh from the checkboxes
+  if (statuses.length === 0){
     alert('Please select at least one Status before searching.');
     return;
   }
   try{
-    const res = await callApi('processScan', { unitId: cleanId, selectedStatuses });
+    const res = await callApi('processScan', { unitId: cleanId, selectedStatuses: statuses });
     if (!res.unit) res.scannedId = cleanId;
     showResult(res);
   }catch(err){
