@@ -26,6 +26,9 @@
   .chk-label{flex:1;}
   .chk-count{font-size:11.5px;font-weight:700;color:#555;background:#eee;padding:2px 9px;border-radius:10px;white-space:nowrap;}
   .chk-count.complete{background:#d7f5df;color:#0d6b2f;}
+  .type-breakdown{display:flex;gap:6px;margin:2px 0 4px 26px;flex-wrap:wrap;}
+  .type-chip{font-size:10.5px;font-weight:600;background:#eee;padding:1px 8px;border-radius:8px;color:#555;}
+  .type-chip.complete{background:#d7f5df;color:#0d6b2f;}
   .refresh-link{font-size:12.5px;color:var(--blue);text-decoration:underline;cursor:pointer;}
   .toolbar{display:flex;gap:8px;margin:8px 0;}
   .toolbar button{flex:1;padding:7px;border:1px solid #ccc;background:#fff;border-radius:8px;cursor:pointer;font-size:13px;}
@@ -81,6 +84,8 @@
   .report-table th{background:var(--gray);font-weight:700;}
   .ac-name-cell{color:var(--blue);font-weight:700;text-align:left !important;cursor:pointer;text-decoration:underline;white-space:nowrap;}
   .ac-name-cell:active{background:#dbeafe;}
+  .ut-line{font-size:11px;line-height:1.6;white-space:nowrap;}
+  .unit-type-tag{font-size:10px;color:#777;font-weight:600;}
   .legend-row{margin-top:8px;}
   .legend-chip{display:inline-block;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:700;margin-right:6px;margin-bottom:6px;}
   .unit-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;margin-bottom:6px;font-size:14px;}
@@ -190,7 +195,7 @@
 /* =========================================================
    IMPORTANT: paste your Apps Script Web App /exec URL below
    ========================================================= */
-const API_URL = 'https://script.google.com/macros/s/AKfycbxdlx3BpZLDzRJDydyG7ppCeZSx64u8uYkRrtqsmFnY4jS_1Mn8fsRMOuvSUYrCXxhCrA/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbzhDW318Z6kRQOyfvA-sr-ffzimWRA0m4vW8Sxqv2NjUtKY_sTaRQWkHwXOuvvDhiWxpw/exec';
 
 let selectedStatuses = [];
 let html5QrCode;
@@ -225,12 +230,14 @@ async function callApi(action, payload){
 
 /* ---------- Load status options + counts ---------- */
 let statusOptionsList = [];
-let statusCountsData = {};
+let statusCountsData = {};   // { "<status text>": {total, marked, byType: {BU:{total,marked}, ...}} }
+let statusCountUnitTypes = []; // e.g. ['BU','CU','VVPAT']
 
 Promise.all([callApi('getStatusOptions'), callApi('getStatusCounts')])
-  .then(([list, counts]) => {
+  .then(([list, countsResp]) => {
     statusOptionsList = list;
-    statusCountsData = counts;
+    statusCountsData = countsResp.counts;
+    statusCountUnitTypes = countsResp.unitTypes;
     renderStatusOptions(list);
   })
   .catch(err => alert('Failed to load status list: ' + err.message));
@@ -239,7 +246,9 @@ document.getElementById('refreshCountsBtn').onclick = async () => {
   const btn = document.getElementById('refreshCountsBtn');
   btn.textContent = 'Refreshing…';
   try{
-    statusCountsData = await callApi('getStatusCounts');
+    const countsResp = await callApi('getStatusCounts');
+    statusCountsData = countsResp.counts;
+    statusCountUnitTypes = countsResp.unitTypes;
     renderStatusOptions(statusOptionsList, true);
   }catch(err){ alert('Failed to refresh counts: ' + err.message); }
   btn.textContent = '⟳ Refresh counts';
@@ -251,14 +260,24 @@ function renderStatusOptions(list, preserveChecks){
     : null;
 
   document.getElementById('statusGrid').innerHTML = list.map(s => {
-    const c = statusCountsData[s] || { total: 0, marked: 0 };
+    const c = statusCountsData[s] || { total: 0, marked: 0, byType: {} };
     const complete = c.total > 0 && c.marked >= c.total;
     const checked = prevChecked && prevChecked.has(s) ? 'checked' : '';
+
+    const typeChips = statusCountUnitTypes
+      .filter(t => c.byType[t] && c.byType[t].total > 0)
+      .map(t => {
+        const tc = c.byType[t];
+        const tComplete = tc.total > 0 && tc.marked >= tc.total;
+        return `<span class="type-chip ${tComplete ? 'complete' : ''}" data-opt="${escapeAttr(s)}" data-type="${escapeAttr(t)}">${t} ${tc.marked}/${tc.total}</span>`;
+      }).join('');
+
     return `<label class="chk">
       <input type="checkbox" class="statusChk" value="${s}" ${checked}>
       <span class="chk-label">${s}</span>
       <span class="chk-count ${complete ? 'complete' : ''}" data-opt="${escapeAttr(s)}">${c.marked}/${c.total}</span>
-    </label>`;
+    </label>
+    ${typeChips ? `<div class="type-breakdown">${typeChips}</div>` : ''}`;
   }).join('');
   updateStatusSummary();
 }
@@ -277,16 +296,29 @@ function findMatchingOption(rawStatus){
 }
 
 // Bump a single status's "marked" count locally (no extra server call) right
-// after a successful match-scan, so the count updates instantly.
-function bumpMarkedCount(rawStatus){
+// after a successful match-scan, so the count updates instantly — both the
+// overall badge and the specific unit-type chip.
+function bumpMarkedCount(rawStatus, rawUnitType){
   const opt = findMatchingOption(rawStatus);
   if (!opt || !statusCountsData[opt]) return;
-  statusCountsData[opt].marked++;
+  const c = statusCountsData[opt];
+  c.marked++;
+
   const badge = document.querySelector(`.chk-count[data-opt="${escapeAttr(opt).replace(/"/g,'\\"')}"]`);
   if (badge){
-    const c = statusCountsData[opt];
     badge.textContent = `${c.marked}/${c.total}`;
     badge.classList.toggle('complete', c.total > 0 && c.marked >= c.total);
+  }
+
+  const unitType = String(rawUnitType || '').trim();
+  if (unitType && c.byType[unitType]){
+    c.byType[unitType].marked++;
+    const chip = document.querySelector(`.type-chip[data-opt="${escapeAttr(opt).replace(/"/g,'\\"')}"][data-type="${escapeAttr(unitType).replace(/"/g,'\\"')}"]`);
+    if (chip){
+      const tc = c.byType[unitType];
+      chip.textContent = `${unitType} ${tc.marked}/${tc.total}`;
+      chip.classList.toggle('complete', tc.total > 0 && tc.marked >= tc.total);
+    }
   }
 }
 
@@ -441,7 +473,7 @@ function showResult(res){
     });
   }
   alertUser(res.result);
-  if (res.result === 'found' && res.unit) bumpMarkedCount(res.unit.status);
+  if (res.result === 'found' && res.unit) bumpMarkedCount(res.unit.status, res.unit.unittypename);
   document.getElementById('stopBtn').style.display='none';
   document.getElementById('startBtn').style.display='none';
   card.scrollIntoView({behavior:'smooth'});
@@ -548,39 +580,32 @@ async function loadReport(){
 document.getElementById('refreshReportBtn').onclick = loadReport;
 
 // Sum counts across unit types, per AC per letter — the "at a glance" static totals
-function computeAcLetterTotals(){
-  const totals = {};
-  reportData.acList.forEach(ac => {
-    totals[ac] = {};
-    reportData.letters.forEach(letter => {
-      let total = 0, marked = 0;
-      const letterObj = reportData.data[ac] && reportData.data[ac][letter];
-      if (letterObj) reportData.unitTypes.forEach(u => {
-        if (letterObj[u]) { total += letterObj[u].total; marked += letterObj[u].marked; }
-      });
-      totals[ac][letter] = { total, marked };
-    });
-  });
-  return totals;
-}
-
 function renderOverviewTable(){
   const wrap = document.getElementById('overviewTableWrap');
-  const totals = computeAcLetterTotals();
-  const { acList, letters } = reportData;
+  const { acList, letters, unitTypes, data } = reportData;
 
   let html = '<div style="overflow-x:auto;"><table class="report-table"><tr><th style="text-align:left;">AC No/Name</th>' +
     letters.map(l => `<th>${l}</th>`).join('') + '<th>Total</th></tr>';
 
   acList.forEach(ac => {
     let rowTotal = 0, rowMarked = 0;
-    letters.forEach(l => { rowTotal += totals[ac][l].total; rowMarked += totals[ac][l].marked; });
+    let cellsHtml = '';
+    letters.forEach(letter => {
+      const letterObj = data[ac] && data[ac][letter];
+      let lines = '';
+      if (letterObj){
+        unitTypes.forEach(u => {
+          const cell = letterObj[u];
+          if (cell && cell.total > 0){
+            rowTotal += cell.total; rowMarked += cell.marked;
+            lines += `<div class="ut-line">${u} ${cell.marked}/${cell.total}</div>`;
+          }
+        });
+      }
+      cellsHtml += `<td>${lines || '-'}</td>`;
+    });
     html += `<tr><td class="ac-name-cell" onclick="showAcDrill('${escapeJs(ac)}')">${ac}</td>` +
-      letters.map(l => {
-        const t = totals[ac][l];
-        return `<td>${t.total ? (t.marked + '/' + t.total) : '-'}</td>`;
-      }).join('') +
-      `<td><b>${rowMarked}/${rowTotal}</b></td></tr>`;
+      cellsHtml + `<td><b>${rowMarked}/${rowTotal}</b></td></tr>`;
   });
   html += '</table></div>';
   wrap.innerHTML = html;
@@ -590,12 +615,12 @@ function showAcDrill(ac){
   const acData = reportData.data[ac] || {};
   const { letters, unitTypes } = reportData;
 
-  // Flatten every matching unit for this AC across all letters/unit types, tagging each with its letter
+  // Flatten every matching unit for this AC across all letters/unit types, tagging each with its letter and unit type
   const rows = [];
   letters.forEach(letter => {
     unitTypes.forEach(u => {
       const cell = acData[letter] && acData[letter][u];
-      if (cell) cell.rows.forEach(r => rows.push({ unit_id: r.unit_id, box_no: r.box_no, letter, mark: r.mark }));
+      if (cell) cell.rows.forEach(r => rows.push({ unit_id: r.unit_id, box_no: r.box_no, letter, unitType: u, mark: r.mark }));
     });
   });
 
@@ -610,6 +635,7 @@ function showAcDrill(ac){
     <div class="unit-row" style="background:${letterBg(r.letter)};">
       <span class="unit-letter" style="color:${letterText(r.letter)};">${r.letter}</span>
       <span class="unit-id">${r.unit_id}</span>
+      <span class="unit-type-tag">${r.unitType}</span>
       <span class="unit-box">Box ${r.box_no}</span>
       <span class="unit-mark ${r.mark ? 'done' : 'pending'}">${r.mark ? '✓ Scanned' : 'Pending'}</span>
     </div>`).join('');
