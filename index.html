@@ -35,6 +35,9 @@
   button.primary{background:var(--green);color:#fff;border:none;padding:12px 16px;border-radius:10px;font-size:16px;width:100%;cursor:pointer;}
   button.secondary{background:#5f6368;color:#fff;border:none;padding:10px 16px;border-radius:10px;font-size:15px;width:100%;cursor:pointer;margin-top:8px;}
   .diag-link{display:block;text-align:center;font-size:12.5px;color:#5f6368;margin-top:8px;text-decoration:underline;cursor:pointer;}
+  .manual-row{display:flex;gap:8px;margin-top:8px;}
+  #manualInput{flex:1;text-transform:uppercase;margin-top:0;}
+  #manualSearchBtn{width:auto;padding:10px 16px;margin-top:0;white-space:nowrap;}
   #reader{width:100%;max-height:230px;border-radius:12px;overflow:hidden;margin-top:10px;background:#000;}
   #reader video{width:100% !important;height:230px !important;object-fit:cover !important;}
 
@@ -132,6 +135,13 @@
       <div id="reader"></div>
       <button class="secondary" id="stopBtn" style="display:none;">Stop Camera</button>
       <span class="diag-link" id="diagBtn">Camera not working? Tap to diagnose</span>
+
+      <h2 style="margin-top:16px;">Or type Unit ID manually</h2>
+      <p class="small" style="margin:0 0 4px 0;">Use this if the barcode is old, scratched, or won't scan.</p>
+      <div class="manual-row">
+        <input type="text" id="manualInput" placeholder="e.g. EVTEY04048" autocapitalize="characters" autocomplete="off">
+        <button class="primary" id="manualSearchBtn">Search</button>
+      </div>
     </div>
 
     <div class="card" id="resultCard">
@@ -195,7 +205,7 @@
 /* =========================================================
    IMPORTANT: paste your Apps Script Web App /exec URL below
    ========================================================= */
-const API_URL = 'https://script.google.com/macros/s/AKfycbylUMRqziDc6b_z_VZJT3fEtXk6tR6l7WlX9fG3hGL2hJN17jQaYxQkYymLjDnkbNNSbw/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbzhDW318Z6kRQOyfvA-sr-ffzimWRA0m4vW8Sxqv2NjUtKY_sTaRQWkHwXOuvvDhiWxpw/exec';
 
 let selectedStatuses = [];
 let html5QrCode;
@@ -433,7 +443,16 @@ async function onScanSuccess(decodedText){
   if (scanningLocked) return;
   scanningLocked = true;
   if (html5QrCode) html5QrCode.pause(true);
-  const cleanId = decodedText.trim();
+  await lookupUnitId(decodedText.trim());
+}
+
+// Shared by camera scan AND manual entry — one place that calls the backend and shows the result
+async function lookupUnitId(cleanId){
+  if (!cleanId) return;
+  if (selectedStatuses.length === 0){
+    alert('Please select at least one Status before searching.');
+    return;
+  }
   try{
     const res = await callApi('processScan', { unitId: cleanId, selectedStatuses });
     if (!res.unit) res.scannedId = cleanId;
@@ -442,6 +461,26 @@ async function onScanSuccess(decodedText){
     showResult({ result:'not_found', message:'Error: ' + err.message, scannedId: cleanId });
   }
 }
+
+/* ---------- Manual entry (for damaged/unreadable barcodes) ---------- */
+const manualInput = document.getElementById('manualInput');
+const manualSearchBtn = document.getElementById('manualSearchBtn');
+
+manualInput.addEventListener('input', () => {
+  manualInput.value = manualInput.value.toUpperCase();
+});
+manualInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); manualSearchBtn.click(); }
+});
+
+manualSearchBtn.onclick = async () => {
+  const val = manualInput.value.trim().toUpperCase();
+  if (!val){ alert('Please type a Unit ID first.'); return; }
+  manualSearchBtn.disabled = true;
+  await lookupUnitId(val);
+  manualInput.value = '';
+  manualSearchBtn.disabled = false;
+};
 
 function showResult(res){
   const card = document.getElementById('resultCard');
