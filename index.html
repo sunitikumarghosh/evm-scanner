@@ -72,16 +72,18 @@
   #adminPanel.active, #scanPanel.active, #reportPanel.active{display:block;}
 
   /* ---------- Report table ---------- */
-  .report-table{width:100%;border-collapse:collapse;margin-top:10px;}
-  .report-table th, .report-table td{border:1px solid #e2e2e2;padding:8px 6px;text-align:center;font-size:13px;}
+  .report-table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px;}
+  .report-table th, .report-table td{border:1px solid #e2e2e2;padding:6px 5px;text-align:center;}
   .report-table th{background:var(--gray);font-weight:700;}
-  .report-table td.letter-cell{background:#fafafa;font-weight:800;text-align:left;padding-left:10px;}
-  .report-table td.count-cell{cursor:pointer;font-weight:700;color:var(--blue);}
-  .report-table td.count-cell.zero{color:#bbb;cursor:default;font-weight:400;}
-  .report-table td.count-cell:not(.zero):active{background:#dbeafe;}
-  .drill-row{display:flex;justify-content:space-between;padding:6px 4px;font-size:13px;border-bottom:1px solid #eee;}
-  .drill-header{display:flex;justify-content:space-between;padding:6px 4px;font-size:12px;font-weight:700;color:#666;border-bottom:2px solid #ccc;}
-  #drillList{max-height:320px;overflow-y:auto;margin-top:8px;}
+  .ac-name-cell{color:var(--blue);font-weight:700;text-align:left !important;cursor:pointer;text-decoration:underline;white-space:nowrap;}
+  .ac-name-cell:active{background:#dbeafe;}
+  .legend-row{margin-top:8px;}
+  .legend-chip{display:inline-block;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:700;margin-right:6px;margin-bottom:6px;}
+  .unit-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;margin-bottom:6px;font-size:14px;}
+  .unit-letter{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,.65);font-weight:800;font-size:12px;}
+  .unit-id{font-family:'Courier New',monospace;font-weight:700;flex:1;}
+  .unit-box{font-weight:700;}
+  #acUnitList{max-height:400px;overflow-y:auto;margin-top:8px;}
 </style>
 </head>
 <body>
@@ -131,18 +133,16 @@
   <!-- ===================== REPORT PANEL ===================== -->
   <div id="reportPanel">
     <div class="card">
-      <h2>AC-wise Status Report</h2>
+      <h2>AC-wise Status Count (at a glance)</h2>
       <div id="reportLoadMsg" class="small">Loading report…</div>
-      <select id="acSelect" style="display:none;"></select>
-      <div id="reportTableWrap"></div>
+      <div id="overviewTableWrap"></div>
+      <p class="small" style="margin-top:8px;">Tap an AC name to see its unit list.</p>
     </div>
 
-    <div class="card" id="drillCard" style="display:none;">
-      <h2 id="drillTitle"></h2>
-      <div class="drill-header">
-        <span>Unit ID</span><span>Box No</span><span>AC No/Name</span><span>PS No</span>
-      </div>
-      <div id="drillList"></div>
+    <div class="card" id="acDrillCard" style="display:none;">
+      <h2 id="acDrillTitle"></h2>
+      <div class="legend-row" id="legendRow"></div>
+      <div id="acUnitList"></div>
     </div>
   </div>
 
@@ -454,74 +454,92 @@ document.getElementById('markUpdateBtn').onclick = async () => {
   }
 };
 
-/* ---------- REPORT (AC-wise status-letter x unittype counts) ---------- */
+/* ---------- REPORT: static AC x status-letter overview, tap AC for colored unit list ---------- */
 let reportData = null; // cached after first load — no repeat server calls
+
+const LETTER_BG = { B:'#ffd9d9', C:'#ffe6b3', D:'#d7f5df', E:'#d6e9ff', F:'#e6d6ff' };
+const LETTER_TEXT = { B:'#a30000', C:'#8a5c00', D:'#0d6b2f', E:'#0d47a1', F:'#5a1a8a' };
+function letterBg(l){ return LETTER_BG[l] || '#eee'; }
+function letterText(l){ return LETTER_TEXT[l] || '#555'; }
+function escapeJs(s){ return String(s).replace(/'/g, "\\'"); }
 
 async function loadReport(){
   const loadMsg = document.getElementById('reportLoadMsg');
   loadMsg.textContent = 'Loading report…';
   loadMsg.style.display = 'block';
-  document.getElementById('acSelect').style.display = 'none';
   try{
     reportData = await callApi('getGroupedReport');
-    populateAcSelect();
+    renderOverviewTable();
     loadMsg.style.display = 'none';
-    document.getElementById('acSelect').style.display = 'block';
   }catch(err){
     loadMsg.textContent = 'Failed to load report: ' + err.message;
   }
 }
 
-function populateAcSelect(){
-  const sel = document.getElementById('acSelect');
-  sel.innerHTML = '<option value="">— Select AC/PC —</option>' +
-    reportData.acList.map(ac => `<option value="${ac}">${ac}</option>`).join('');
-  sel.onchange = () => renderReportTable(sel.value);
+// Sum counts across unit types, per AC per letter — the "at a glance" static totals
+function computeAcLetterTotals(){
+  const totals = {};
+  reportData.acList.forEach(ac => {
+    totals[ac] = {};
+    reportData.letters.forEach(letter => {
+      let sum = 0;
+      const letterObj = reportData.data[ac] && reportData.data[ac][letter];
+      if (letterObj) reportData.unitTypes.forEach(u => { if (letterObj[u]) sum += letterObj[u].count; });
+      totals[ac][letter] = sum;
+    });
+  });
+  return totals;
 }
 
-function renderReportTable(ac){
-  const wrap = document.getElementById('reportTableWrap');
-  document.getElementById('drillCard').style.display = 'none';
-  if (!ac){ wrap.innerHTML = ''; return; }
+function renderOverviewTable(){
+  const wrap = document.getElementById('overviewTableWrap');
+  const totals = computeAcLetterTotals();
+  const { acList, letters } = reportData;
 
-  const { letters, unitTypes, data } = reportData;
-  const acData = data[ac] || {};
+  let html = '<div style="overflow-x:auto;"><table class="report-table"><tr><th style="text-align:left;">AC No/Name</th>' +
+    letters.map(l => `<th>${l}</th>`).join('') + '<th>Total</th></tr>';
 
-  let html = '<table class="report-table"><tr><th>Status</th>' +
-    unitTypes.map(u => `<th>${u}</th>`).join('') + '</tr>';
-
-  letters.forEach(letter => {
-    html += `<tr><td class="letter-cell">${letter}</td>`;
-    unitTypes.forEach(u => {
-      const cell = acData[letter] && acData[letter][u];
-      const count = cell ? cell.count : 0;
-      if (count > 0){
-        html += `<td class="count-cell" onclick="showDrill('${escapeJs(ac)}','${letter}','${escapeJs(u)}')">${count}</td>`;
-      } else {
-        html += `<td class="count-cell zero">-</td>`;
-      }
-    });
-    html += '</tr>';
+  acList.forEach(ac => {
+    let rowTotal = 0;
+    letters.forEach(l => { rowTotal += totals[ac][l]; });
+    html += `<tr><td class="ac-name-cell" onclick="showAcDrill('${escapeJs(ac)}')">${ac}</td>` +
+      letters.map(l => `<td>${totals[ac][l] || '-'}</td>`).join('') +
+      `<td><b>${rowTotal}</b></td></tr>`;
   });
-  html += '</table>';
+  html += '</table></div>';
   wrap.innerHTML = html;
 }
 
-function escapeJs(s){ return String(s).replace(/'/g, "\\'"); }
+function showAcDrill(ac){
+  const acData = reportData.data[ac] || {};
+  const { letters, unitTypes } = reportData;
 
-function showDrill(ac, letter, unitType){
-  const cell = reportData.data[ac] && reportData.data[ac][letter] && reportData.data[ac][letter][unitType];
-  const rows = cell ? cell.rows : [];
-  document.getElementById('drillTitle').textContent = `${ac} — ${letter} — ${unitType} (${rows.length})`;
-  document.getElementById('drillList').innerHTML = rows.map(r => `
-    <div class="drill-row">
-      <span>${r.unit_id}</span><span>${r.box_no}</span><span>${r.ac_no_name}</span><span>${r.ps_no}</span>
+  // Flatten every matching unit for this AC across all letters/unit types, tagging each with its letter
+  const rows = [];
+  letters.forEach(letter => {
+    unitTypes.forEach(u => {
+      const cell = acData[letter] && acData[letter][u];
+      if (cell) cell.rows.forEach(r => rows.push({ unit_id: r.unit_id, box_no: r.box_no, letter }));
+    });
+  });
+
+  document.getElementById('acDrillTitle').textContent = `${ac} — ${rows.length} units`;
+
+  document.getElementById('legendRow').innerHTML = letters.map(l =>
+    `<span class="legend-chip" style="background:${letterBg(l)};color:${letterText(l)};">${l}</span>`
+  ).join('');
+
+  document.getElementById('acUnitList').innerHTML = rows.map(r => `
+    <div class="unit-row" style="background:${letterBg(r.letter)};">
+      <span class="unit-letter" style="color:${letterText(r.letter)};">${r.letter}</span>
+      <span class="unit-id">${r.unit_id}</span>
+      <span class="unit-box">Box ${r.box_no}</span>
     </div>`).join('');
-  const card = document.getElementById('drillCard');
+
+  const card = document.getElementById('acDrillCard');
   card.style.display = 'block';
   card.scrollIntoView({behavior:'smooth'});
 }
-
 </script>
 </body>
 </html>
