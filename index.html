@@ -23,6 +23,10 @@
   .status-body.collapsed{display:none;}
   .status-grid{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;}
   label.chk{display:flex;align-items:center;gap:8px;font-size:14px;}
+  .chk-label{flex:1;}
+  .chk-count{font-size:11.5px;font-weight:700;color:#555;background:#eee;padding:2px 9px;border-radius:10px;white-space:nowrap;}
+  .chk-count.complete{background:#d7f5df;color:#0d6b2f;}
+  .refresh-link{font-size:12.5px;color:var(--blue);text-decoration:underline;cursor:pointer;}
   .toolbar{display:flex;gap:8px;margin:8px 0;}
   .toolbar button{flex:1;padding:7px;border:1px solid #ccc;background:#fff;border-radius:8px;cursor:pointer;font-size:13px;}
   button.primary{background:var(--green);color:#fff;border:none;padding:12px 16px;border-radius:10px;font-size:16px;width:100%;cursor:pointer;}
@@ -83,6 +87,9 @@
   .unit-letter{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,.65);font-weight:800;font-size:12px;}
   .unit-id{font-family:'Courier New',monospace;font-weight:700;flex:1;}
   .unit-box{font-weight:700;}
+  .unit-mark{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:10px;white-space:nowrap;}
+  .unit-mark.done{background:#0d6b2f;color:#fff;}
+  .unit-mark.pending{background:rgba(0,0,0,.08);color:#666;}
   #acUnitList{max-height:400px;overflow-y:auto;margin-top:8px;}
 </style>
 </head>
@@ -109,6 +116,7 @@
           <button id="selNone">Clear All</button>
         </div>
         <div class="status-grid" id="statusGrid"></div>
+        <span class="refresh-link" id="refreshCountsBtn">⟳ Refresh counts</span>
       </div>
     </div>
 
@@ -136,7 +144,8 @@
       <h2>AC-wise Status Count (at a glance)</h2>
       <div id="reportLoadMsg" class="small">Loading report…</div>
       <div id="overviewTableWrap"></div>
-      <p class="small" style="margin-top:8px;">Tap an AC name to see its unit list.</p>
+      <p class="small" style="margin-top:8px;">Tap an AC name to see its unit list. Counts shown as <b>marked/total</b>.
+        <span class="refresh-link" id="refreshReportBtn">⟳ Refresh</span></p>
     </div>
 
     <div class="card" id="acDrillCard" style="display:none;">
@@ -181,7 +190,7 @@
 /* =========================================================
    IMPORTANT: paste your Apps Script Web App /exec URL below
    ========================================================= */
-const API_URL = 'https://script.google.com/macros/s/AKfycbwTRGm8jVGHIbbpRLok5gxsjPqO_lxei1qH-TIluxscZ__lN621elb49TZ8pnFm59sfag/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbxdlx3BpZLDzRJDydyG7ppCeZSx64u8uYkRrtqsmFnY4jS_1Mn8fsRMOuvSUYrCXxhCrA/exec';
 
 let selectedStatuses = [];
 let html5QrCode;
@@ -214,14 +223,73 @@ async function callApi(action, payload){
   return json.data;
 }
 
-/* ---------- Load status options ---------- */
-callApi('getStatusOptions').then(renderStatusOptions).catch(err => alert('Failed to load status list: ' + err.message));
+/* ---------- Load status options + counts ---------- */
+let statusOptionsList = [];
+let statusCountsData = {};
 
-function renderStatusOptions(list){
-  document.getElementById('statusGrid').innerHTML = list.map(s => `
-    <label class="chk"><input type="checkbox" class="statusChk" value="${s}"> ${s}</label>`).join('');
+Promise.all([callApi('getStatusOptions'), callApi('getStatusCounts')])
+  .then(([list, counts]) => {
+    statusOptionsList = list;
+    statusCountsData = counts;
+    renderStatusOptions(list);
+  })
+  .catch(err => alert('Failed to load status list: ' + err.message));
+
+document.getElementById('refreshCountsBtn').onclick = async () => {
+  const btn = document.getElementById('refreshCountsBtn');
+  btn.textContent = 'Refreshing…';
+  try{
+    statusCountsData = await callApi('getStatusCounts');
+    renderStatusOptions(statusOptionsList, true);
+  }catch(err){ alert('Failed to refresh counts: ' + err.message); }
+  btn.textContent = '⟳ Refresh counts';
+};
+
+function renderStatusOptions(list, preserveChecks){
+  const prevChecked = preserveChecks
+    ? new Set(getSelectedStatuses())
+    : null;
+
+  document.getElementById('statusGrid').innerHTML = list.map(s => {
+    const c = statusCountsData[s] || { total: 0, marked: 0 };
+    const complete = c.total > 0 && c.marked >= c.total;
+    const checked = prevChecked && prevChecked.has(s) ? 'checked' : '';
+    return `<label class="chk">
+      <input type="checkbox" class="statusChk" value="${s}" ${checked}>
+      <span class="chk-label">${s}</span>
+      <span class="chk-count ${complete ? 'complete' : ''}" data-opt="${escapeAttr(s)}">${c.marked}/${c.total}</span>
+    </label>`;
+  }).join('');
   updateStatusSummary();
 }
+
+function escapeAttr(s){ return String(s).replace(/"/g, '&quot;'); }
+
+// Find which STATUS_OPTIONS entry a raw sheet status value corresponds to,
+// tolerant of whether the letter prefix is stored or not (mirrors server logic)
+function findMatchingOption(rawStatus){
+  const strip = s => s.replace(/^[a-z]\s*-\s*/, '');
+  const target = String(rawStatus || '').trim().toLowerCase();
+  for (const opt of statusOptionsList){ if (opt.trim().toLowerCase() === target) return opt; }
+  const strippedTarget = strip(target);
+  for (const opt of statusOptionsList){ if (strip(opt.trim().toLowerCase()) === strippedTarget) return opt; }
+  return null;
+}
+
+// Bump a single status's "marked" count locally (no extra server call) right
+// after a successful match-scan, so the count updates instantly.
+function bumpMarkedCount(rawStatus){
+  const opt = findMatchingOption(rawStatus);
+  if (!opt || !statusCountsData[opt]) return;
+  statusCountsData[opt].marked++;
+  const badge = document.querySelector(`.chk-count[data-opt="${escapeAttr(opt).replace(/"/g,'\\"')}"]`);
+  if (badge){
+    const c = statusCountsData[opt];
+    badge.textContent = `${c.marked}/${c.total}`;
+    badge.classList.toggle('complete', c.total > 0 && c.marked >= c.total);
+  }
+}
+
 document.getElementById('selAll').onclick = () => { setAllChecks(true); updateStatusSummary(); };
 document.getElementById('selNone').onclick = () => { setAllChecks(false); updateStatusSummary(); };
 function setAllChecks(val){ document.querySelectorAll('.statusChk').forEach(c => c.checked = val); }
@@ -373,6 +441,7 @@ function showResult(res){
     });
   }
   alertUser(res.result);
+  if (res.result === 'found' && res.unit) bumpMarkedCount(res.unit.status);
   document.getElementById('stopBtn').style.display='none';
   document.getElementById('startBtn').style.display='none';
   card.scrollIntoView({behavior:'smooth'});
@@ -467,6 +536,7 @@ async function loadReport(){
   const loadMsg = document.getElementById('reportLoadMsg');
   loadMsg.textContent = 'Loading report…';
   loadMsg.style.display = 'block';
+  document.getElementById('acDrillCard').style.display = 'none';
   try{
     reportData = await callApi('getGroupedReport');
     renderOverviewTable();
@@ -475,6 +545,7 @@ async function loadReport(){
     loadMsg.textContent = 'Failed to load report: ' + err.message;
   }
 }
+document.getElementById('refreshReportBtn').onclick = loadReport;
 
 // Sum counts across unit types, per AC per letter — the "at a glance" static totals
 function computeAcLetterTotals(){
@@ -482,10 +553,12 @@ function computeAcLetterTotals(){
   reportData.acList.forEach(ac => {
     totals[ac] = {};
     reportData.letters.forEach(letter => {
-      let sum = 0;
+      let total = 0, marked = 0;
       const letterObj = reportData.data[ac] && reportData.data[ac][letter];
-      if (letterObj) reportData.unitTypes.forEach(u => { if (letterObj[u]) sum += letterObj[u].count; });
-      totals[ac][letter] = sum;
+      if (letterObj) reportData.unitTypes.forEach(u => {
+        if (letterObj[u]) { total += letterObj[u].total; marked += letterObj[u].marked; }
+      });
+      totals[ac][letter] = { total, marked };
     });
   });
   return totals;
@@ -500,11 +573,14 @@ function renderOverviewTable(){
     letters.map(l => `<th>${l}</th>`).join('') + '<th>Total</th></tr>';
 
   acList.forEach(ac => {
-    let rowTotal = 0;
-    letters.forEach(l => { rowTotal += totals[ac][l]; });
+    let rowTotal = 0, rowMarked = 0;
+    letters.forEach(l => { rowTotal += totals[ac][l].total; rowMarked += totals[ac][l].marked; });
     html += `<tr><td class="ac-name-cell" onclick="showAcDrill('${escapeJs(ac)}')">${ac}</td>` +
-      letters.map(l => `<td>${totals[ac][l] || '-'}</td>`).join('') +
-      `<td><b>${rowTotal}</b></td></tr>`;
+      letters.map(l => {
+        const t = totals[ac][l];
+        return `<td>${t.total ? (t.marked + '/' + t.total) : '-'}</td>`;
+      }).join('') +
+      `<td><b>${rowMarked}/${rowTotal}</b></td></tr>`;
   });
   html += '</table></div>';
   wrap.innerHTML = html;
@@ -519,11 +595,12 @@ function showAcDrill(ac){
   letters.forEach(letter => {
     unitTypes.forEach(u => {
       const cell = acData[letter] && acData[letter][u];
-      if (cell) cell.rows.forEach(r => rows.push({ unit_id: r.unit_id, box_no: r.box_no, letter }));
+      if (cell) cell.rows.forEach(r => rows.push({ unit_id: r.unit_id, box_no: r.box_no, letter, mark: r.mark }));
     });
   });
 
-  document.getElementById('acDrillTitle').textContent = `${ac} — ${rows.length} units`;
+  const markedCount = rows.filter(r => r.mark).length;
+  document.getElementById('acDrillTitle').textContent = `${ac} — ${markedCount}/${rows.length} marked`;
 
   document.getElementById('legendRow').innerHTML = letters.map(l =>
     `<span class="legend-chip" style="background:${letterBg(l)};color:${letterText(l)};">${l}</span>`
@@ -534,6 +611,7 @@ function showAcDrill(ac){
       <span class="unit-letter" style="color:${letterText(r.letter)};">${r.letter}</span>
       <span class="unit-id">${r.unit_id}</span>
       <span class="unit-box">Box ${r.box_no}</span>
+      <span class="unit-mark ${r.mark ? 'done' : 'pending'}">${r.mark ? '✓ Scanned' : 'Pending'}</span>
     </div>`).join('');
 
   const card = document.getElementById('acDrillCard');
