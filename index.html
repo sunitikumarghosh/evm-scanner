@@ -611,19 +611,23 @@ function renderOverviewTable(){
   wrap.innerHTML = html;
 }
 
-function showAcDrill(ac){
-  const acData = reportData.data[ac] || {};
-  const { letters, unitTypes } = reportData;
+async function showAcDrill(ac){
+  const card = document.getElementById('acDrillCard');
+  document.getElementById('acDrillTitle').textContent = `${ac} — loading…`;
+  document.getElementById('acUnitList').innerHTML = '';
+  card.style.display = 'block';
+  card.scrollIntoView({behavior:'smooth'});
 
-  // Flatten every matching unit for this AC across all letters/unit types, tagging each with its letter and unit type
-  const rows = [];
-  letters.forEach(letter => {
-    unitTypes.forEach(u => {
-      const cell = acData[letter] && acData[letter][u];
-      if (cell) cell.rows.forEach(r => rows.push({ unit_id: r.unit_id, box_no: r.box_no, letter, unitType: u, mark: r.mark }));
-    });
-  });
+  let rows;
+  try{
+    rows = await callApi('getAcUnitDetails', { acName: ac });
+  }catch(err){
+    document.getElementById('acDrillTitle').textContent = `${ac} — failed to load`;
+    document.getElementById('acUnitList').innerHTML = `<div class="msg error">${err.message}</div>`;
+    return;
+  }
 
+  const { letters } = reportData;
   const markedCount = rows.filter(r => r.mark).length;
   document.getElementById('acDrillTitle').textContent = `${ac} — ${markedCount}/${rows.length} marked`;
 
@@ -639,10 +643,6 @@ function showAcDrill(ac){
       <span class="unit-box">Box ${r.box_no}</span>
       <span class="unit-mark ${r.mark ? 'done' : 'pending'}">${r.mark ? '✓ Scanned' : 'Pending'}</span>
     </div>`).join('');
-
-  const card = document.getElementById('acDrillCard');
-  card.style.display = 'block';
-  card.scrollIntoView({behavior:'smooth'});
 }
 </script>
 </body>
