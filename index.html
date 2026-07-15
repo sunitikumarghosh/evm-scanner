@@ -60,54 +60,112 @@
 
   .msg{padding:10px;border-radius:8px;font-size:14px;margin-top:8px;}
   .msg.error{background:#fce8e6;color:var(--red);}
-  input[type=text]{width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;font-size:15px;margin-top:6px;}
+  .msg.success{background:#e6f4ea;color:var(--green);}
+  input[type=text], input[type=password], select{width:100%;padding:10px;border:1px solid #ccc;border-radius:8px;font-size:15px;margin-top:6px;}
+  .small{font-size:12px;color:#666;}
+
+  /* ---------- Tabs / Admin panel ---------- */
+  .tabbar{display:flex;background:#fff;border-bottom:1px solid #ddd;}
+  .tabbar button{flex:1;padding:12px;border:none;background:none;font-size:14px;font-weight:700;color:#888;cursor:pointer;}
+  .tabbar button.active{color:var(--saffron);border-bottom:3px solid var(--saffron);}
+  #adminPanel, #scanPanel{display:none;}
+  #adminPanel.active, #scanPanel.active{display:block;}
 </style>
 </head>
 <body>
 <header><h1>EVM Unit Scanner</h1></header>
+<div class="tabbar">
+  <button id="tabScan" class="active">🔍 Scan</button>
+  <button id="tabAdmin">🔐 Admin</button>
+</div>
 <main>
-  <div class="card">
-    <div class="status-header" id="statusHeader">
-      <h2 style="margin:0;">1. Status to check for</h2>
-      <span class="chev" id="statusChev">Change ▾</span>
-    </div>
-    <div class="status-summary" id="statusSummary" style="display:none;"></div>
-    <div class="status-body" id="statusBody">
-      <div class="toolbar">
-        <button id="selAll">Select All</button>
-        <button id="selNone">Clear All</button>
+
+  <!-- ===================== SCAN PANEL ===================== -->
+  <div id="scanPanel" class="active">
+    <div class="card">
+      <div class="status-header" id="statusHeader">
+        <h2 style="margin:0;">1. Status to check for</h2>
+        <span class="chev" id="statusChev">Change ▾</span>
       </div>
-      <div class="status-grid" id="statusGrid"></div>
+      <div class="status-summary" id="statusSummary" style="display:none;"></div>
+      <div class="status-body" id="statusBody">
+        <div class="toolbar">
+          <button id="selAll">Select All</button>
+          <button id="selNone">Clear All</button>
+        </div>
+        <div class="status-grid" id="statusGrid"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2. Scan Barcode</h2>
+      <button class="primary" id="startBtn">Start Camera</button>
+      <div id="cameraMsg"></div>
+      <div id="reader"></div>
+      <button class="secondary" id="stopBtn" style="display:none;">Stop Camera</button>
+      <span class="diag-link" id="diagBtn">Camera not working? Tap to diagnose</span>
+    </div>
+
+    <div class="card" id="resultCard">
+      <span class="badge" id="resultBadge"></span>
+      <div id="resultUnitId"></div>
+      <h2 id="resultMsg"></h2>
+      <div id="resultFields"></div>
+      <button class="primary" id="scanNextBtn" style="margin-top:12px;">Scan Next</button>
     </div>
   </div>
 
-  <div class="card">
-    <h2>2. Scan Barcode</h2>
-    <button class="primary" id="startBtn">Start Camera</button>
-    <div id="cameraMsg"></div>
-    <div id="reader"></div>
-    <button class="secondary" id="stopBtn" style="display:none;">Stop Camera</button>
-    <span class="diag-link" id="diagBtn">Camera not working? Tap to diagnose</span>
+  <!-- ===================== ADMIN PANEL ===================== -->
+  <div id="adminPanel">
+    <div class="card" id="loginCard">
+      <h2>Admin Login</h2>
+      <input type="password" id="adminPass" placeholder="Enter admin password">
+      <button class="primary" id="loginBtn" style="margin-top:10px;">Login</button>
+      <div id="loginMsg"></div>
+    </div>
+
+    <div class="card" id="adminSearchCard" style="display:none;">
+      <h2>Search Unit by ID</h2>
+      <input type="text" id="adminUnitId" placeholder="Enter / paste unit_id">
+      <button class="secondary" id="adminSearchBtn">Search</button>
+      <div id="adminResult" style="margin-top:10px;"></div>
+
+      <div id="markEditBlock" style="display:none; margin-top:14px;">
+        <b>Change Mark:</b>
+        <select id="markSelect">
+          <option value="">(blank / clear)</option>
+          <option value="Scanned">Scanned</option>
+          <option value="Rechecked">Rechecked</option>
+        </select>
+        <button class="primary" id="markUpdateBtn" style="margin-top:10px;">Update Mark</button>
+        <div id="markUpdateMsg"></div>
+      </div>
+      <p class="small">Admin can also use the Scan tab at any time.</p>
+    </div>
   </div>
 
-  <div class="card" id="resultCard">
-    <span class="badge" id="resultBadge"></span>
-    <div id="resultUnitId"></div>
-    <h2 id="resultMsg"></h2>
-    <div id="resultFields"></div>
-    <button class="primary" id="scanNextBtn" style="margin-top:12px;">Scan Next</button>
-  </div>
 </main>
 
 <script>
 /* =========================================================
    IMPORTANT: paste your Apps Script Web App /exec URL below
    ========================================================= */
-const API_URL = 'https://script.google.com/macros/s/AKfycbzx6N0pea302LcEMyZmMuiiz1Z7xq111v11vInEg7vt4NfTcCP0ZIhiQelOYn9rkzFycA/exec';
+const API_URL = 'PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE';
 
 let selectedStatuses = [];
 let html5QrCode;
 let scanningLocked = false;
+let adminPassword = null; // kept only in this browser session
+
+/* ---------- TABS ---------- */
+document.getElementById('tabScan').onclick = () => switchTab('scan');
+document.getElementById('tabAdmin').onclick = () => switchTab('admin');
+function switchTab(tab){
+  document.getElementById('scanPanel').classList.toggle('active', tab === 'scan');
+  document.getElementById('adminPanel').classList.toggle('active', tab === 'admin');
+  document.getElementById('tabScan').classList.toggle('active', tab === 'scan');
+  document.getElementById('tabAdmin').classList.toggle('active', tab === 'admin');
+}
 
 /* ---------- API call helper (avoids CORS preflight by using text/plain) ---------- */
 async function callApi(action, payload){
@@ -298,6 +356,68 @@ function alertUser(result){
     osc.start(); osc.stop(ctx.currentTime + 0.35);
   }catch(e){}
 }
+
+/* ---------- ADMIN ---------- */
+document.getElementById('loginBtn').onclick = async () => {
+  const pass = document.getElementById('adminPass').value;
+  const msg = document.getElementById('loginMsg');
+  try{
+    const ok = await callApi('adminLogin', { password: pass });
+    if (ok){
+      adminPassword = pass;
+      msg.innerHTML = '';
+      document.getElementById('loginCard').style.display='none';
+      document.getElementById('adminSearchCard').style.display='block';
+    } else {
+      msg.innerHTML = '<div class="msg error">Incorrect password.</div>';
+    }
+  }catch(err){
+    msg.innerHTML = '<div class="msg error">' + err.message + '</div>';
+  }
+};
+
+document.getElementById('adminSearchBtn').onclick = async () => {
+  const unitId = document.getElementById('adminUnitId').value.trim();
+  if (!unitId) return;
+  const div = document.getElementById('adminResult');
+  try{
+    const data = await callApi('adminSearchUnit', { password: adminPassword, unitId });
+    renderAdminResult(data);
+  }catch(err){
+    div.innerHTML = '<div class="msg error">' + err.message + '</div>';
+    document.getElementById('markEditBlock').style.display = 'none';
+  }
+};
+
+let currentAdminUnitId = null;
+function renderAdminResult(data){
+  const div = document.getElementById('adminResult');
+  const markBlock = document.getElementById('markEditBlock');
+  if (!data){
+    div.innerHTML = '<div class="msg error">Unit ID not found.</div>';
+    markBlock.style.display = 'none';
+    return;
+  }
+  currentAdminUnitId = data.unit_id;
+  const order = ['unit_id','box_no','status','wh_id','wh_address','unittypename','ac_no_name','ps_no','mark'];
+  div.innerHTML = order.map(k => data[k] !== undefined
+    ? `<div class="field-row"><b>${k}</b><span>${data[k]}</span></div>` : '').join('');
+  document.getElementById('markSelect').value =
+    ['','Scanned','Rechecked'].includes(data.mark) ? data.mark : '';
+  markBlock.style.display = 'block';
+}
+
+document.getElementById('markUpdateBtn').onclick = async () => {
+  if (!currentAdminUnitId) return;
+  const newMark = document.getElementById('markSelect').value;
+  const msgDiv = document.getElementById('markUpdateMsg');
+  try{
+    const res = await callApi('adminUpdateMark', { password: adminPassword, unitId: currentAdminUnitId, newMark });
+    msgDiv.innerHTML = '<div class="msg success">' + res.message + '</div>';
+  }catch(err){
+    msgDiv.innerHTML = '<div class="msg error">' + err.message + '</div>';
+  }
+};
 </script>
 </body>
 </html>
