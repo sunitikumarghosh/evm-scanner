@@ -133,6 +133,7 @@
       <button class="primary" id="startBtn">Start Camera</button>
       <div id="cameraMsg"></div>
       <div id="reader"></div>
+      <div id="scanStatus" class="small" style="min-height:16px;margin-top:4px;"></div>
       <button class="secondary" id="stopBtn" style="display:none;">Stop Camera</button>
       <span class="diag-link" id="diagBtn">Camera not working? Tap to diagnose</span>
 
@@ -180,22 +181,11 @@
     </div>
 
     <div class="card" id="adminSearchCard" style="display:none;">
-      <h2>Search Unit by ID</h2>
-      <input type="text" id="adminUnitId" placeholder="Enter / paste unit_id">
+      <h2>Search Unit by ID (full database)</h2>
+      <p class="small" style="margin:0 0 4px 0;">Searches the complete dataset — including units not in the fast-scan list.</p>
+      <input type="text" id="adminUnitId" placeholder="Enter / paste unit_id" autocapitalize="characters" autocomplete="off">
       <button class="secondary" id="adminSearchBtn">Search</button>
       <div id="adminResult" style="margin-top:10px;"></div>
-
-      <div id="markEditBlock" style="display:none; margin-top:14px;">
-        <b>Change Mark:</b>
-        <select id="markSelect">
-          <option value="">(blank / clear)</option>
-          <option value="Scanned">Scanned</option>
-          <option value="Rechecked">Rechecked</option>
-        </select>
-        <button class="primary" id="markUpdateBtn" style="margin-top:10px;">Update Mark</button>
-        <div id="markUpdateMsg"></div>
-      </div>
-      <p class="small">Admin can also use the Scan tab at any time.</p>
     </div>
   </div>
 
@@ -205,7 +195,7 @@
 /* =========================================================
    IMPORTANT: paste your Apps Script Web App /exec URL below
    ========================================================= */
-const API_URL = 'https://script.google.com/macros/s/AKfycbyW0Gu4ix9S9VkhCK6Y19590jdlPtlO7KmMy2GqcfYZDrWpFDQyxCwMaGfM6J7mo-8Pzg/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbx7u-wwK4Cmds3_ZdTWQ4d9icTFXK6rk1J31Kc14mL-ExAVfQtOy-Gdd9jCddMkBtKDbg/exec';
 
 let selectedStatuses = [];
 let html5QrCode;
@@ -439,11 +429,29 @@ function resetScanButtons(){
   document.getElementById('stopBtn').style.display='none';
 }
 
+let ignoreStatusTimer = null;
+function flashScanStatus(text){
+  const el = document.getElementById('scanStatus');
+  el.textContent = text;
+  clearTimeout(ignoreStatusTimer);
+  ignoreStatusTimer = setTimeout(() => { el.textContent = ''; }, 1200);
+}
+
 async function onScanSuccess(decodedText){
   if (scanningLocked) return;
+  const clean = decodedText.trim();
+
+  // These units have two barcodes side by side on the label; only the one
+  // starting with "E" is the correct EVM barcode. Ignore anything else
+  // WITHOUT pausing the camera, so scanning stays fast and uninterrupted.
+  if (!/^E/i.test(clean)){
+    flashScanStatus('Ignored a non-EVM barcode — keep scanning…');
+    return;
+  }
+
   scanningLocked = true;
   if (html5QrCode) html5QrCode.pause(true);
-  await lookupUnitId(decodedText.trim());
+  await lookupUnitId(clean);
 }
 
 // Shared by camera scan AND manual entry — one place that calls the backend and shows the result
@@ -552,48 +560,34 @@ document.getElementById('loginBtn').onclick = async () => {
   }
 };
 
+document.getElementById('adminUnitId').addEventListener('input', e => { e.target.value = e.target.value.toUpperCase(); });
+document.getElementById('adminUnitId').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); document.getElementById('adminSearchBtn').click(); }
+});
+
 document.getElementById('adminSearchBtn').onclick = async () => {
-  const unitId = document.getElementById('adminUnitId').value.trim();
+  const unitId = document.getElementById('adminUnitId').value.trim().toUpperCase();
   if (!unitId) return;
   const div = document.getElementById('adminResult');
+  div.innerHTML = '<div class="small">Searching full database…</div>';
   try{
     const data = await callApi('adminSearchUnit', { password: adminPassword, unitId });
     renderAdminResult(data);
   }catch(err){
     div.innerHTML = '<div class="msg error">' + err.message + '</div>';
-    document.getElementById('markEditBlock').style.display = 'none';
   }
 };
 
-let currentAdminUnitId = null;
 function renderAdminResult(data){
   const div = document.getElementById('adminResult');
-  const markBlock = document.getElementById('markEditBlock');
   if (!data){
     div.innerHTML = '<div class="msg error">Unit ID not found.</div>';
-    markBlock.style.display = 'none';
     return;
   }
-  currentAdminUnitId = data.unit_id;
   const order = ['unit_id','box_no','status','wh_id','wh_address','unittypename','ac_no_name','ps_no','mark'];
   div.innerHTML = order.map(k => data[k] !== undefined
     ? `<div class="field-row"><b>${k}</b><span>${data[k]}</span></div>` : '').join('');
-  document.getElementById('markSelect').value =
-    ['','Scanned','Rechecked'].includes(data.mark) ? data.mark : '';
-  markBlock.style.display = 'block';
 }
-
-document.getElementById('markUpdateBtn').onclick = async () => {
-  if (!currentAdminUnitId) return;
-  const newMark = document.getElementById('markSelect').value;
-  const msgDiv = document.getElementById('markUpdateMsg');
-  try{
-    const res = await callApi('adminUpdateMark', { password: adminPassword, unitId: currentAdminUnitId, newMark });
-    msgDiv.innerHTML = '<div class="msg success">' + res.message + '</div>';
-  }catch(err){
-    msgDiv.innerHTML = '<div class="msg error">' + err.message + '</div>';
-  }
-};
 
 /* ---------- REPORT: static AC x status-letter overview, tap AC for colored unit list ---------- */
 let reportData = null; // cached after first load — no repeat server calls
